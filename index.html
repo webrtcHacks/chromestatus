@@ -1,0 +1,174 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>Import chromestatus.com data</title>
+        <script src="https://code.jquery.com/jquery-2.1.3.min.js"></script>
+        <!-- highcharts is used under the terms of
+            http://shop.highsoft.com/faq/non-commercial
+        -->
+        <script src="https://code.highcharts.com/highcharts.js"></script>
+        <script src="https://code.highcharts.com/modules/data.js"></script>
+    </head>
+    <body>
+        <p>Display multiple chromestatus timeline data buckets (e.g. <a href="https://www.chromestatus.com/metrics/feature/timeline/popularity/2254">addTrack</a> which is shown as an example by default) in the same graph and combine them if you want.</p>
+        <ul>
+          <li>Note the bucket ids for the data you want to have graphed and add them as comma-separated list of buckets to the urls ?bucket parameter, e.g. <i>?buckets=2254</i> for addTrack which is the default. You can specify <i>?buckets=1641+2254+2513</i> to get a sum of the usage, this can be combined with drawing multiple buckets.</li>
+          <li>use the <i>?window=</i> parameter to control the window length of the rolling average. A window of 1 effectively disableѕ the rolling average, multiples of seven days work well since the data typically has a distinct workday/weekend pattern.</li>
+          <li>use <i>?export</i> to increase font size and plot width. Recommended for screenshots.</li>
+          <li>use <i>?start=yyyy-mm-dd</i> or <i>?stop=yyyy-mm-dd</i> to look at a date range as alternative to zooming in.</li>
+        </ul>
+        <p id="buckets"></p>
+        <div id="container" style="min-width: 95%; height: 800px; margin: 0 auto"></div>
+        <p>Note (from chromestatus.com): on 2017-10-26 the underlying metrics were switched over to a newer collection system which is more accurate. This is also the reason for the abrupt spike around 2017-10-26.</p>
+    </body>
+    <script>
+const searchParams = new URLSearchParams(window.location.search);
+// Window for rolling average. Set to 1 to disable.
+// Due to the strong weekday-weekend patterns multiples of 7 work well.
+const windowLength = searchParams.get('window') || 28;
+
+const options = {
+    chart: {
+        zoomType: 'x',
+        renderTo : 'container',
+    },
+    title: {
+        text: 'Chromestatus data, ' + windowLength + ' day rolling average',
+    },
+    xAxis: {
+        type: 'datetime',
+        labels: {
+            style: {
+                fontSize: 11,
+            },
+        },
+        gridLineWidth: 1,
+    },
+    yAxis: {
+        min: 0,
+        title: {
+            text: 'pageloads %',
+        },
+        labels: {
+            style: {
+                fontSize: 11,
+            },
+        },
+    },
+	plotOptions: {
+        series: {
+		    lineWidth: 2,
+	    },
+    },
+    legend: {
+        itemStyle: {
+            fontSize: 12,
+        },
+    },
+    series: [],
+}
+if (searchParams.has('export')) {
+    // Different settings for webrtchacks posts optimized for small width.
+    document.getElementById('container').style.width = 627;
+    document.getElementById('container').style.height = 350;
+    document.getElementById('container').style['min-width'] = 627;
+    options.title.text = '';
+    options.legend.itemStyle.fontSize = 9;
+    options.yAxis.endOnTick = false;
+    options.yAxis.title.text = '';
+}
+const chart = new Highcharts.Chart(options);
+
+const bucketList = (searchParams.get('buckets') || '2254').split(',');
+document.getElementById('buckets').innerText = 'Buckets: ' + bucketList.join(',').split(' ').join('+');
+
+let startDate;
+let endDate;
+if (searchParams.has('start')) {
+    startDate = Date.parse(searchParams.get('start'));
+}
+if (searchParams.has('stop')) {
+    endDate = Date.parse(searchParams.get('stop'));
+}
+function draw(rawData) {
+    const win = [];
+    let count = 0;
+    const data = rawData
+        .map(item => [Date.parse(item.date), item.day_percentage * 100])
+        .map(item => { // rolling average.
+            win.push(item);
+            // There are gaps in the data so we can't simply look at the window length.
+            while(win.length && item[0] - win[0][0] >= windowLength * 86400 * 1000) {
+                win.shift();
+            }
+            return [item[0], win.map(a => a[1]).reduce((a, b) => a + b, 0) / win.length];
+        })
+        .filter(item => {
+            if (startDate && item[0] < startDate) return false;
+            if (endDate && item[0] > endDate) return false;
+            return true;
+        });
+    const series = {
+        name: rawData[0].property_name + '(id=' + rawData[0].bucket_id + ')',
+        data,
+    };
+    chart.addSeries(series);
+}
+
+Promise.all(bucketList.map(async bucket_id => {
+    const baseUrl = 'https://www.chromestatus.com/data/timeline/featurepopularity?bucket_id=';
+    if (bucket_id.indexOf('plus') === -1 && bucket_id.indexOf(' ') === -1) {
+        return fetch(baseUrl + bucket_id)
+            .then(response => response.json())
+            // Single bucket does does not need the duplicate cleanup but it won't hurt either.
+            .then(result => {
+                // Sometimes (addStream) the data seems to contain duplicate day for a day (October 3rd 2021 for addStream=1641).
+                // Clean that up to avoid issues when summing things up.
+                const seen = {};
+                return result.filter(item => {
+                    if (seen[item.date]) return false;
+                    seen[item.date] = true;
+                    return true;
+                });
+            });
+    } else {
+        // TODO: avoid fetching the data twice if we have n and n+something
+        const bucket_ids = bucket_id.indexOf('plus') !== -1 ? bucket_id.split('plus') : bucket_id.split(' ');
+        const results = await Promise.all(bucket_ids.map(id => {
+            return fetch(baseUrl + id)
+                .then(response => response.json())
+                .then(result => {
+                    // Sometimes (addStream) the data seems to contain duplicate day for a day (October 3rd 2021 for addStream=1641).
+                    // Clean that up to avoid issues when summing things up.
+                    const seen = {};
+                    return result.filter(item => {
+                        if (seen[item.date]) return false;
+                        seen[item.date] = true;
+                        return true;
+                    });
+                });
+        }));
+
+        const maxLength = Math.max.apply(undefined, results.map(r => r.length));
+        const data = results.find(r => r.length == maxLength)
+            .map(item => ({
+                bucket_id: bucket_id.split(' ').join('+'),
+                property_name: 'combined',
+                date: item.date,
+                day_percentage: 0.0,
+            }));
+        results.forEach(result => {
+            // Data starts at different times but end date is the same.
+            // TODO: there are gaps at different dates so the assumption here does not hold up?
+            const offset = maxLength - result.length;
+            result.forEach((item, index) => {
+                data[index + offset].day_percentage += item.day_percentage;
+            });
+        });
+        return data;
+    }
+})).then(dataSets => {
+    dataSets.forEach(data => draw(data));
+});
+    </script>
+</html>
