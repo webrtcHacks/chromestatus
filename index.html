@@ -116,7 +116,7 @@ function draw(rawData) {
 }
 
 Promise.all(bucketList.map(async bucket_id => {
-    const baseUrl = 'https://www.chromestatus.com/data/timeline/featurepopularity?bucket_id=';
+    const baseUrl = 'https://chromestatus.com/data/timeline/featurepopularity?bucket_id=';
     if (bucket_id.indexOf('plus') === -1 && bucket_id.indexOf(' ') === -1) {
         return fetch(baseUrl + bucket_id)
             .then(response => response.json())
