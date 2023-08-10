@@ -108,8 +108,11 @@ function draw(rawData) {
             if (endDate && item[0] > endDate) return false;
             return true;
         });
+    const propertyName = rawData.find(item => {
+        return item.property_name && item.property_name !== 'ERROR';
+    }).property_name;
     const series = {
-        name: rawData[0].property_name + '(id=' + rawData[0].bucket_id + ')',
+        name: propertyName + ' (id=' + rawData[0].bucket_id + ')',
         data,
     };
     chart.addSeries(series);
