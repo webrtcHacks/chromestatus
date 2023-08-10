@@ -2,12 +2,7 @@
     <head>
         <meta charset="utf-8">
         <title>Import chromestatus.com data</title>
-        <script src="https://code.jquery.com/jquery-2.1.3.min.js"></script>
-        <!-- highcharts is used under the terms of
-            http://shop.highsoft.com/faq/non-commercial
-        -->
-        <script src="https://code.highcharts.com/highcharts.js"></script>
-        <script src="https://code.highcharts.com/modules/data.js"></script>
+        <script src="https://cdn.plot.ly/plotly-2.18.2.min.js"></script>
     </head>
     <body>
         <p>Display multiple chromestatus timeline data buckets (e.g. <a href="https://www.chromestatus.com/metrics/feature/timeline/popularity/2254">addTrack</a> which is shown as an example by default) in the same graph and combine them if you want.</p>
@@ -35,37 +30,23 @@ const options = {
     title: {
         text: 'Chromestatus data, ' + windowLength + ' day rolling average',
     },
-    xAxis: {
-        type: 'datetime',
-        labels: {
-            style: {
-                fontSize: 11,
-            },
-        },
-        gridLineWidth: 1,
+    xaxis: {
+        type: 'date',
     },
-    yAxis: {
+    yaxis: {
         min: 0,
-        title: {
-            text: 'pageloads %',
-        },
-        labels: {
-            style: {
-                fontSize: 11,
-            },
-        },
+        title: 'pageloads %',
+        titlefont: {
+            size: 11,
+        }
     },
-	plotOptions: {
-        series: {
-		    lineWidth: 2,
-	    },
-    },
-    legend: {
-        itemStyle: {
-            fontSize: 12,
+    layout: {
+        showlegend: true,
+        legend: {
+            x: 0,
+            y: 0,
         },
     },
-    series: [],
 }
 if (searchParams.has('export')) {
     // Different settings for webrtchacks posts optimized for small width.
@@ -77,7 +58,7 @@ if (searchParams.has('export')) {
     options.yAxis.endOnTick = false;
     options.yAxis.title.text = '';
 }
-const chart = new Highcharts.Chart(options);
+Plotly.newPlot(document.getElementById('container'), [], options);
 
 const bucketList = (searchParams.get('buckets') || '2254').split(',');
 document.getElementById('buckets').innerText = 'Buckets: ' + bucketList.join(',').split(' ').join('+');
@@ -113,9 +94,10 @@ function draw(rawData) {
     }).property_name;
     const series = {
         name: propertyName + ' (id=' + rawData[0].bucket_id + ')',
-        data,
+        x: data.map(item => item[0]),
+        y: data.map(item => item[1]),
     };
-    chart.addSeries(series);
+    Plotly.addTraces(document.getElementById('container'), [series]);
 }
 
 Promise.all(bucketList.map(async bucket_id => {
