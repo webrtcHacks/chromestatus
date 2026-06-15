@@ -15,8 +15,13 @@
           <li>use the <i>?window=</i> parameter to control the window length of the rolling average. A window of 1 effectively disableѕ the rolling average, multiples of seven days work well since the data typically has a distinct workday/weekend pattern.</li>
           <li>use <i>?export</i> to increase font size and plot width. Recommended for screenshots.</li>
           <li>use <i>?start=yyyy-mm-dd</i> or <i>?stop=yyyy-mm-dd</i> to look at a date range as alternative to zooming in.</li>
+          <li>use the Download CSV button to export the charted data for Excel.</li>
         </ul>
         <p id="buckets"></p>
+        <div id="actions" style="margin: 8px 0 12px 0;">
+            <button id="download-csv" type="button" disabled>Download CSV</button>
+            <span id="download-hint" style="margin-left: 8px; font-size: 12px; color: #555;">Includes the charted rolling-average values.</span>
+        </div>
         <div id="container" style="min-width: 95%; height: 800px; margin: 0 auto"></div>
         <p>Note (from chromestatus.com): on 2017-10-26 the underlying metrics were switched over to a newer collection system which is more accurate. This is also the reason for the abrupt spike around 2017-10-26.</p>
     </body>
@@ -71,6 +76,7 @@ if (searchParams.has('export')) {
     document.getElementById('container').style.width = 627;
     document.getElementById('container').style.height = 350;
     document.getElementById('container').style['min-width'] = 627;
+    document.getElementById('actions').style.display = 'none';
     options.title.text = '';
     options.legend.itemStyle.fontSize = 9;
     options.yAxis.endOnTick = false;
@@ -80,6 +86,9 @@ const chart = new Highcharts.Chart(options);
 
 const bucketList = (searchParams.get('buckets') || '2254').split(',');
 document.getElementById('buckets').innerText = 'Buckets: ' + bucketList.join(',').split(' ').join('+');
+const downloadButton = document.getElementById('download-csv');
+const downloadHint = document.getElementById('download-hint');
+const seriesForExport = [];
 
 let startDate;
 let endDate;
@@ -115,6 +124,67 @@ function draw(rawData) {
         data,
     };
     chart.addSeries(series);
+    seriesForExport.push(series);
+}
+
+function csvEscape(value) {
+    if (value === null || value === undefined) return '';
+    const str = String(value);
+    if (/[",\n]/.test(str)) {
+        return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+}
+
+function buildCsv(seriesList) {
+    const dateSet = new Set();
+    const seriesMaps = seriesList.map(series => {
+        const map = new Map();
+        series.data.forEach(point => {
+            map.set(point[0], point[1]);
+            dateSet.add(point[0]);
+        });
+        return map;
+    });
+    const dates = Array.from(dateSet).sort((a, b) => a - b);
+    const header = ['Date', ...seriesList.map(s => s.name)];
+    const rows = [header];
+    dates.forEach(ts => {
+        const dateStr = new Date(ts).toISOString().slice(0, 10);
+        const row = [dateStr];
+        seriesMaps.forEach(map => {
+            const value = map.get(ts);
+            row.push(value === undefined ? '' : Number(value).toFixed(6));
+        });
+        rows.push(row);
+    });
+    return rows.map(row => row.map(csvEscape).join(',')).join('\n');
+}
+
+function getDownloadFilename() {
+    const bucketLabel = bucketList.join('+').replace(/\s+/g, '+');
+    const windowLabel = windowLength;
+    const parts = ['chromestatus-data', bucketLabel, 'window-' + windowLabel];
+    if (startDate) parts.push('start-' + new Date(startDate).toISOString().slice(0, 10));
+    if (endDate) parts.push('stop-' + new Date(endDate).toISOString().slice(0, 10));
+    return parts.join('-').replace(/[^a-zA-Z0-9+._-]/g, '') + '.csv';
+}
+
+function enableDownload() {
+    if (!downloadButton) return;
+    downloadButton.disabled = false;
+    downloadButton.addEventListener('click', () => {
+        const csv = buildCsv(seriesForExport);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', getDownloadFilename());
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    });
 }
 
 Promise.all(bucketList.map(async bucket_id => {
@@ -171,6 +241,7 @@ Promise.all(bucketList.map(async bucket_id => {
     }
 })).then(dataSets => {
     dataSets.forEach(data => draw(data));
+    enableDownload();
 });
     </script>
 </html>
