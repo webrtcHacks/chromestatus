@@ -12,7 +12,7 @@
         <p>Display multiple chromestatus timeline data buckets (e.g. <a href="https://www.chromestatus.com/metrics/feature/timeline/popularity/2254">addTrack</a> which is shown as an example by default) in the same graph and combine them if you want.</p>
         <ul>
           <li>Note the bucket ids for the data you want to have graphed and add them as comma-separated list of buckets to the urls ?bucket parameter, e.g. <i>?buckets=2254</i> for addTrack which is the default. You can specify <i>?buckets=1641+2254+2513</i> to get a sum of the usage, this can be combined with drawing multiple buckets.</li>
-          <li>use the <i>?window=</i> parameter to control the window length of the rolling average. A window of 1 effectively disableѕ the rolling average, multiples of seven days work well since the data typically has a distinct workday/weekend pattern.</li>
+          <li>use the <i>?window=</i> parameter to control the window length of the rolling average, which defaults to 7 days. A window of 1 effectively disableѕ the rolling average, multiples of seven days work well since the data typically has a distinct workday/weekend pattern.</li>
           <li>use <i>?export</i> to increase font size and plot width. Recommended for screenshots.</li>
           <li>use <i>?start=yyyy-mm-dd</i> or <i>?stop=yyyy-mm-dd</i> to look at a date range as alternative to zooming in.</li>
           <li>use the Download CSV button to export the charted data for Excel.</li>
@@ -29,7 +29,7 @@
 const searchParams = new URLSearchParams(window.location.search);
 // Window for rolling average. Set to 1 to disable.
 // Due to the strong weekday-weekend patterns multiples of 7 work well.
-const windowLength = searchParams.get('window') || 28;
+const windowLength = searchParams.get('window') || 7;
 
 const options = {
     chart: {
@@ -85,7 +85,28 @@ if (searchParams.has('export')) {
 const chart = new Highcharts.Chart(options);
 
 const bucketList = (searchParams.get('buckets') || '2254').split(',');
-document.getElementById('buckets').innerText = 'Buckets: ' + bucketList.join(',').split(' ').join('+');
+const bucketsElement = document.getElementById('buckets');
+bucketsElement.appendChild(document.createTextNode('Buckets: '));
+bucketList.forEach((bucket, index) => {
+    if (index > 0) {
+        bucketsElement.appendChild(document.createTextNode(', '));
+    }
+    // Combined buckets get one link per id.
+    const ids = bucket.indexOf('plus') !== -1 ? bucket.split('plus') : bucket.split(' ');
+    ids.forEach((id, idIndex) => {
+        if (idIndex > 0) {
+            bucketsElement.appendChild(document.createTextNode('+'));
+        }
+        const link = document.createElement('a');
+        link.href = 'https://chromestatus.com/metrics/feature/timeline/popularity/' +
+            encodeURIComponent(id.trim());
+        link.innerText = id.trim();
+        bucketsElement.appendChild(link);
+    });
+});
+bucketsElement.appendChild(document.createTextNode(
+    ' | Rolling average window: ' + windowLength + ' day' +
+    (Number(windowLength) === 1 ? ' (disabled)' : 's')));
 const downloadButton = document.getElementById('download-csv');
 const downloadHint = document.getElementById('download-hint');
 const seriesForExport = [];
@@ -221,11 +242,17 @@ Promise.all(bucketList.map(async bucket_id => {
                 });
         }));
 
+        // Name the combined series after the buckets it sums up.
+        const propertyNames = results.map((result, index) => {
+            const named = result.find(item => item.property_name && item.property_name !== 'ERROR');
+            return named ? named.property_name : bucket_ids[index];
+        });
+
         const maxLength = Math.max.apply(undefined, results.map(r => r.length));
         const data = results.find(r => r.length == maxLength)
             .map(item => ({
-                bucket_id: bucket_id.split(' ').join('+'),
-                property_name: 'combined',
+                bucket_id: bucket_ids.join('+'),
+                property_name: 'SUM(' + propertyNames.join(', ') + ')',
                 date: item.date,
                 day_percentage: 0.0,
             }));
