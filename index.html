@@ -2,11 +2,70 @@
     <head>
         <meta charset="utf-8">
         <title>Import chromestatus.com data</title>
-        <!-- highcharts is used under the terms of
-            http://shop.highsoft.com/faq/non-commercial
-        -->
-        <script src="https://code.highcharts.com/highcharts.js"></script>
-        <script src="https://code.highcharts.com/modules/data.js"></script>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css">
+        <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"></script>
+        <style>
+            body {
+                font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+                color: #0b0b0b;
+                background: #ffffff;
+            }
+            .u-legend {
+                font-size: 12px;
+            }
+            .u-title {
+                font-size: 16px;
+            }
+            #container.export .u-legend {
+                font-size: 9px;
+            }
+            /* Drop uPlot's dashed crosshair lines. The dot it puts on each
+               series at the hovered point is enough of a pointer, and the
+               legend and tooltip say the rest. */
+            .u-cursor-x, .u-cursor-y {
+                display: none;
+            }
+            .chart-tooltip {
+                position: absolute;
+                z-index: 10;
+                display: none;
+                pointer-events: none;
+                padding: 6px 8px;
+                background: #ffffff;
+                border: 1px solid rgba(11, 11, 11, 0.1);
+                border-radius: 4px;
+                box-shadow: 0 2px 6px rgba(11, 11, 11, 0.12);
+                font-size: 12px;
+                white-space: nowrap;
+                color: #0b0b0b;
+            }
+            #container.export .chart-tooltip {
+                font-size: 10px;
+            }
+            .chart-tooltip .date {
+                color: #52514e;
+                margin-bottom: 4px;
+            }
+            .chart-tooltip .marker {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                margin-right: 5px;
+                border-radius: 50%;
+            }
+            /* Push the values to a common right edge so they read as a column
+               regardless of how long the series names are. */
+            .chart-tooltip .row {
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+            }
+            .chart-tooltip .value {
+                font-variant-numeric: tabular-nums;
+                font-weight: 600;
+                text-align: right;
+            }
+        </style>
     </head>
     <body>
         <p>Display multiple chromestatus timeline data buckets (e.g. <a href="https://www.chromestatus.com/metrics/feature/timeline/popularity/2254">addTrack</a> which is shown as an example by default) in the same graph and combine them if you want.</p>
@@ -16,13 +75,15 @@
           <li>use <i>?export</i> to increase font size and plot width. Recommended for screenshots.</li>
           <li>use <i>?start=yyyy-mm-dd</i> or <i>?stop=yyyy-mm-dd</i> to look at a date range as alternative to zooming in.</li>
           <li>use the Download CSV button to export the charted data for Excel.</li>
+          <li>drag across the chart to zoom in on a date range. Double-click the chart or use the Reset zoom button to go back out. Click a legend entry to hide or show that series, ctrl-click (cmd-click) to show only that one.</li>
         </ul>
         <p id="buckets"></p>
         <div id="actions" style="margin: 8px 0 12px 0;">
             <button id="download-csv" type="button" disabled>Download CSV</button>
-            <span id="download-hint" style="margin-left: 8px; font-size: 12px; color: #555;">Includes the charted rolling-average values.</span>
+            <button id="reset-zoom" type="button" style="display: none; margin-left: 8px;">Reset zoom</button>
+            <span id="download-hint" style="margin-left: 8px; font-size: 12px; color: #52514e;">Includes the charted rolling-average values.</span>
         </div>
-        <div id="container" style="min-width: 95%; height: 800px; margin: 0 auto"></div>
+        <div id="container" style="width: 95%; margin: 0 auto"></div>
         <p>Note (from chromestatus.com): on 2017-10-26 the underlying metrics were switched over to a newer collection system which is more accurate. This is also the reason for the abrupt spike around 2017-10-26.</p>
     </body>
     <script>
@@ -30,59 +91,31 @@ const searchParams = new URLSearchParams(window.location.search);
 // Window for rolling average. Set to 1 to disable.
 // Due to the strong weekday-weekend patterns multiples of 7 work well.
 const windowLength = searchParams.get('window') || 7;
+// Different settings for webrtchacks posts optimized for small width.
+const exportMode = searchParams.has('export');
 
-const options = {
-    chart: {
-        zoomType: 'x',
-        renderTo : 'container',
-    },
-    title: {
-        text: 'Chromestatus data, ' + windowLength + ' day rolling average',
-    },
-    xAxis: {
-        type: 'datetime',
-        labels: {
-            style: {
-                fontSize: 11,
-            },
-        },
-        gridLineWidth: 1,
-    },
-    yAxis: {
-        min: 0,
-        title: {
-            text: 'pageloads %',
-        },
-        labels: {
-            style: {
-                fontSize: 11,
-            },
-        },
-    },
-	plotOptions: {
-        series: {
-		    lineWidth: 2,
-	    },
-    },
-    legend: {
-        itemStyle: {
-            fontSize: 12,
-        },
-    },
-    series: [],
-}
-if (searchParams.has('export')) {
-    // Different settings for webrtchacks posts optimized for small width.
-    document.getElementById('container').style.width = 627;
-    document.getElementById('container').style.height = 350;
-    document.getElementById('container').style['min-width'] = 627;
+// Categorical palette in fixed slot order, validated for colour-vision
+// deficiency on a white surface. A series keeps its colour by position, so
+// hiding one does not repaint the others. Past eight series the hues repeat
+// with a new dash pattern rather than inventing new colours.
+const PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100',
+                 '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const DASHES = [undefined, [8, 4], [2, 3]];
+// Recessive chart chrome, so the data lines stay the darkest thing on screen.
+const GRID_COLOR = '#e1e0d9';
+const AXIS_COLOR = '#c3c2b7';
+const LABEL_COLOR = '#898781';
+const FONT_SIZE = exportMode ? 9 : 11;
+const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+const CHART_HEIGHT = exportMode ? 350 : 800;
+const CHART_WIDTH = 627;
+
+const container = document.getElementById('container');
+if (exportMode) {
+    container.classList.add('export');
+    container.style.width = CHART_WIDTH + 'px';
     document.getElementById('actions').style.display = 'none';
-    options.title.text = '';
-    options.legend.itemStyle.fontSize = 9;
-    options.yAxis.endOnTick = false;
-    options.yAxis.title.text = '';
 }
-const chart = new Highcharts.Chart(options);
 
 const bucketList = (searchParams.get('buckets') || '2254').split(',');
 const bucketsElement = document.getElementById('buckets');
@@ -109,7 +142,7 @@ bucketsElement.appendChild(document.createTextNode(
     (Number(windowLength) === 1 ? ' (disabled)' : 's')));
 const downloadButton = document.getElementById('download-csv');
 const downloadHint = document.getElementById('download-hint');
-const seriesForExport = [];
+const resetButton = document.getElementById('reset-zoom');
 
 let startDate;
 let endDate;
@@ -119,11 +152,15 @@ if (searchParams.has('start')) {
 if (searchParams.has('stop')) {
     endDate = Date.parse(searchParams.get('stop'));
 }
-function draw(rawData) {
+
+// Turns the raw chromestatus response into a named series of
+// [timestamp in milliseconds, rolling average] pairs.
+function toSeries(rawData) {
     const win = [];
-    let count = 0;
     const data = rawData
         .map(item => [Date.parse(item.date), item.day_percentage * 100])
+        // A missing percentage would poison every window it appears in with NaN.
+        .filter(item => Number.isFinite(item[1]))
         .map(item => { // rolling average.
             win.push(item);
             // There are gaps in the data so we can't simply look at the window length.
@@ -140,12 +177,197 @@ function draw(rawData) {
     const propertyName = rawData.find(item => {
         return item.property_name && item.property_name !== 'ERROR';
     }).property_name;
-    const series = {
+    return {
         name: propertyName + ' (id=' + rawData[0].bucket_id + ')',
         data,
     };
-    chart.addSeries(series);
-    seriesForExport.push(series);
+}
+
+// Buckets start at different dates and have gaps, so both the chart and the CSV
+// need the sorted union of all timestamps to line the series up against.
+function unionTimestamps(seriesList) {
+    const timestamps = new Set();
+    seriesList.forEach(series => {
+        series.data.forEach(point => timestamps.add(point[0]));
+    });
+    return Array.from(timestamps).sort((a, b) => a - b);
+}
+
+// uPlot wants one shared x array plus one y array per series, with null for the
+// timestamps a series has no value at. It also counts time in seconds.
+function alignForPlot(seriesList, timestamps) {
+    const xs = timestamps.map(ts => ts / 1000);
+    const ys = seriesList.map(series => {
+        const byTimestamp = new Map(series.data);
+        return timestamps.map(ts => {
+            const value = byTimestamp.get(ts);
+            return value === undefined ? null : value;
+        });
+    });
+    return [xs, ...ys];
+}
+
+// Usage runs from tens of percent down to millionths, so show four decimals,
+// and switch to four significant digits once the value is small enough that
+// four decimals would round the detail away.
+function formatValue(value) {
+    return value === 0 || Math.abs(value) >= 0.1
+        ? value.toFixed(4)
+        : value.toPrecision(4);
+}
+
+// Hovering shows the date plus every visible series' value at that point,
+// which is what the Highcharts tooltip used to do.
+function tooltipPlugin() {
+    let tooltip;
+    return {
+        hooks: {
+            init: chart => {
+                tooltip = document.createElement('div');
+                tooltip.className = 'chart-tooltip';
+                chart.over.appendChild(tooltip);
+                chart.over.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+            },
+            setCursor: chart => {
+                const {idx, left, top} = chart.cursor;
+                if (idx == null || left < 0 || top < 0) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                const dateElement = document.createElement('div');
+                dateElement.className = 'date';
+                dateElement.textContent = new Date(chart.data[0][idx] * 1000)
+                    .toISOString().slice(0, 10);
+                const lines = [dateElement];
+                chart.series.forEach((series, index) => {
+                    if (index === 0 || !series.show) return;
+                    const value = chart.data[index][idx];
+                    if (value == null) return;
+                    const line = document.createElement('div');
+                    line.className = 'row';
+                    const marker = document.createElement('span');
+                    marker.className = 'marker';
+                    marker.style.background = PALETTE[(index - 1) % PALETTE.length];
+                    const name = document.createElement('span');
+                    name.append(marker, series.label);
+                    const valueElement = document.createElement('span');
+                    valueElement.className = 'value';
+                    valueElement.textContent = formatValue(value) + ' %';
+                    line.append(name, valueElement);
+                    lines.push(line);
+                });
+                if (lines.length === 1) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                tooltip.replaceChildren(...lines);
+                tooltip.style.display = 'block';
+                // Flip to the other side of the cursor near the right/bottom edge.
+                const flipX = left + tooltip.offsetWidth + 20 > chart.over.clientWidth;
+                const flipY = top + tooltip.offsetHeight + 20 > chart.over.clientHeight;
+                tooltip.style.left = (flipX ? left - tooltip.offsetWidth - 12 : left + 12) + 'px';
+                tooltip.style.top = (flipY ? top - tooltip.offsetHeight - 12 : top + 12) + 'px';
+            },
+        },
+    };
+}
+
+function drawChart(seriesList) {
+    const timestamps = unionTimestamps(seriesList);
+    const options = {
+        width: exportMode ? CHART_WIDTH : container.clientWidth,
+        height: CHART_HEIGHT,
+        title: exportMode ? '' :
+            'Chromestatus data, ' + windowLength + ' day rolling average',
+        scales: {
+            x: {
+                time: true,
+            },
+            y: {
+                // Match the old y axis: pinned to zero at the bottom, whatever
+                // the visible data does, with a little headroom on top.
+                // hard clamps the bound, soft + mode 2 pulls it back up to 0.
+                range: {
+                    min: {hard: 0, soft: 0, mode: 2},
+                    max: {pad: 0.05},
+                },
+            },
+        },
+        axes: [{
+            stroke: LABEL_COLOR,
+            font: FONT_SIZE + 'px ' + FONT_FAMILY,
+            grid: {
+                stroke: GRID_COLOR,
+                width: 1,
+            },
+            ticks: {
+                stroke: AXIS_COLOR,
+            },
+        }, {
+            label: exportMode ? undefined : 'pageloads %',
+            labelFont: (FONT_SIZE + 1) + 'px ' + FONT_FAMILY,
+            stroke: LABEL_COLOR,
+            font: FONT_SIZE + 'px ' + FONT_FAMILY,
+            grid: {
+                stroke: GRID_COLOR,
+                width: 1,
+            },
+            ticks: {
+                stroke: AXIS_COLOR,
+            },
+        }],
+        series: [{}, ...seriesList.map((series, index) => ({
+            label: series.name,
+            stroke: PALETTE[index % PALETTE.length],
+            dash: DASHES[Math.floor(index / PALETTE.length) % DASHES.length],
+            width: 2,
+            // Connect across the nulls introduced by aligning the series, so a
+            // gap in one bucket does not chop up its line.
+            spanGaps: true,
+        }))],
+        legend: {
+            // Identity and click-to-toggle only. The tooltip carries the
+            // values, and turning off the live legend also drops the x axis
+            // row uPlot would otherwise label "Time".
+            live: false,
+        },
+        cursor: {
+            // Drag along x to zoom, double click to reset.
+            drag: {
+                x: true,
+                y: false,
+            },
+        },
+        plugins: [tooltipPlugin()],
+        hooks: {
+            // Double clicking the plot resets the zoom, but that is not
+            // discoverable, so offer a button whenever the view is zoomed in.
+            setScale: [(chart, key) => {
+                if (key !== 'x' || !resetButton) return;
+                const xs = chart.data[0];
+                const zoomed = chart.scales.x.min > xs[0] ||
+                    chart.scales.x.max < xs[xs.length - 1];
+                resetButton.style.display = zoomed ? '' : 'none';
+            }],
+        },
+    };
+    const chart = new uPlot(options, alignForPlot(seriesList, timestamps), container);
+    // uPlot ships the inline legend style but never applies the class itself.
+    chart.root.querySelector('.u-legend').classList.add('u-inline');
+    if (resetButton) {
+        resetButton.addEventListener('click', () => {
+            const xs = chart.data[0];
+            chart.setScale('x', {min: xs[0], max: xs[xs.length - 1]});
+        });
+    }
+    if (!exportMode) {
+        window.addEventListener('resize', () => {
+            chart.setSize({width: container.clientWidth, height: CHART_HEIGHT});
+        });
+    }
+    return chart;
 }
 
 function csvEscape(value) {
@@ -158,16 +380,8 @@ function csvEscape(value) {
 }
 
 function buildCsv(seriesList) {
-    const dateSet = new Set();
-    const seriesMaps = seriesList.map(series => {
-        const map = new Map();
-        series.data.forEach(point => {
-            map.set(point[0], point[1]);
-            dateSet.add(point[0]);
-        });
-        return map;
-    });
-    const dates = Array.from(dateSet).sort((a, b) => a - b);
+    const dates = unionTimestamps(seriesList);
+    const seriesMaps = seriesList.map(series => new Map(series.data));
     const header = ['Date', ...seriesList.map(s => s.name)];
     const rows = [header];
     dates.forEach(ts => {
@@ -191,11 +405,11 @@ function getDownloadFilename() {
     return parts.join('-').replace(/[^a-zA-Z0-9+._-]/g, '') + '.csv';
 }
 
-function enableDownload() {
+function enableDownload(seriesList) {
     if (!downloadButton) return;
     downloadButton.disabled = false;
     downloadButton.addEventListener('click', () => {
-        const csv = buildCsv(seriesForExport);
+        const csv = buildCsv(seriesList);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -267,8 +481,9 @@ Promise.all(bucketList.map(async bucket_id => {
         return data;
     }
 })).then(dataSets => {
-    dataSets.forEach(data => draw(data));
-    enableDownload();
+    const seriesList = dataSets.map(data => toSeries(data));
+    drawChart(seriesList);
+    enableDownload(seriesList);
 });
     </script>
 </html>
