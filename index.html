@@ -25,6 +25,42 @@
             .u-cursor-x, .u-cursor-y {
                 display: none;
             }
+            #feature-results {
+                display: none;
+                position: absolute;
+                z-index: 20;
+                margin: 2px 0 0 0;
+                padding: 0;
+                list-style: none;
+                width: 320px;
+                max-height: 260px;
+                overflow-y: auto;
+                background: #ffffff;
+                border: 1px solid rgba(11, 11, 11, 0.1);
+                border-radius: 4px;
+                box-shadow: 0 2px 6px rgba(11, 11, 11, 0.12);
+            }
+            #feature-results button {
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                width: 100%;
+                padding: 4px 8px;
+                border: 0;
+                background: none;
+                font: inherit;
+                font-size: 13px;
+                text-align: left;
+                cursor: pointer;
+            }
+            #feature-results button:hover,
+            #feature-results button:focus {
+                background: #f0efec;
+            }
+            #feature-results .id {
+                color: #898781;
+                font-variant-numeric: tabular-nums;
+            }
             .chart-tooltip {
                 position: absolute;
                 z-index: 10;
@@ -74,10 +110,17 @@
           <li>use the <i>?window=</i> parameter to control the window length of the rolling average, which defaults to 7 days. A window of 1 effectively disableѕ the rolling average, multiples of seven days work well since the data typically has a distinct workday/weekend pattern.</li>
           <li>use <i>?export</i> to increase font size and plot width. Recommended for screenshots.</li>
           <li>use <i>?start=yyyy-mm-dd</i> or <i>?stop=yyyy-mm-dd</i> to look at a date range as alternative to zooming in.</li>
+          <li>use the search field to look a feature up by name and add its bucket to the chart, if you do not know its id.</li>
           <li>use the Download CSV button to export the charted data for Excel.</li>
           <li>drag across the chart to zoom in on a date range. Double-click the chart or use the Reset zoom button to go back out. Click a legend entry to hide or show that series, ctrl-click (cmd-click) to show only that one.</li>
         </ul>
         <p id="buckets"></p>
+        <div id="search" style="margin: 8px 0 12px 0; position: relative;">
+            <input id="feature-search" type="search" autocomplete="off" disabled
+                   placeholder="Loading feature names&hellip;"
+                   style="width: 320px; padding: 4px 6px; font-size: 13px;">
+            <ul id="feature-results"></ul>
+        </div>
         <div id="actions" style="margin: 8px 0 12px 0;">
             <button id="download-csv" type="button" disabled>Download CSV</button>
             <button id="reset-zoom" type="button" style="display: none; margin-left: 8px;">Reset zoom</button>
@@ -115,6 +158,7 @@ if (exportMode) {
     container.classList.add('export');
     container.style.width = CHART_WIDTH + 'px';
     document.getElementById('actions').style.display = 'none';
+    document.getElementById('search').style.display = 'none';
 }
 
 const bucketList = (searchParams.get('buckets') || '2254').split(',');
@@ -205,6 +249,75 @@ function alignForPlot(seriesList, timestamps) {
         });
     });
     return [xs, ...ys];
+}
+
+// Search over the [bucket id, feature name] pairs blink publishes, so buckets
+// can be picked by name instead of looking their ids up on chromestatus.
+const MAX_RESULTS = 20;
+const searchInput = document.getElementById('feature-search');
+const resultsElement = document.getElementById('feature-results');
+
+// Adding a bucket goes through the url, which keeps it the single source of
+// truth for what is charted and leaves the page shareable.
+function addBucket(id) {
+    if (bucketList.some(bucket => bucket.trim() === String(id))) return;
+    searchParams.set('buckets', bucketList.concat(id).join(','));
+    // URLSearchParams escapes the separating commas, which is legal but makes
+    // for an ugly url to share. They are safe to put back verbatim.
+    window.location.search = searchParams.toString().replace(/%2C/g, ',');
+}
+
+function showResults(features, query) {
+    const needle = query.trim().toLowerCase();
+    resultsElement.replaceChildren();
+    if (!needle) {
+        resultsElement.style.display = 'none';
+        return;
+    }
+    const matches = features
+        .map(feature => [feature[0], feature[1], feature[1].toLowerCase().indexOf(needle)])
+        .filter(feature => feature[2] !== -1)
+        // Names that start with the query first, so searching RTCPeerConnection
+        // does not lead with DeprecatedRtcPeerConnectionId and the OBSOLETE_ ones.
+        .sort((a, b) => a[2] - b[2])
+        .slice(0, MAX_RESULTS);
+    matches.forEach(([id, name]) => {
+        const item = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        const label = document.createElement('span');
+        label.textContent = name;
+        const idElement = document.createElement('span');
+        idElement.className = 'id';
+        idElement.textContent = id;
+        button.append(label, idElement);
+        button.addEventListener('click', () => addBucket(id));
+        item.appendChild(button);
+        resultsElement.appendChild(item);
+    });
+    resultsElement.style.display = matches.length ? 'block' : 'none';
+}
+
+function enableSearch(features) {
+    searchInput.disabled = false;
+    searchInput.placeholder = 'Search ' + features.length + ' feature names…';
+    searchInput.addEventListener('input', () => {
+        showResults(features, searchInput.value);
+    });
+    searchInput.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            resultsElement.style.display = 'none';
+        } else if (event.key === 'Enter') {
+            // Enter takes the top match, so a full name can be typed straight in.
+            const first = resultsElement.querySelector('button');
+            if (first) first.click();
+        }
+    });
+    document.addEventListener('click', event => {
+        if (!event.target.closest('#search')) {
+            resultsElement.style.display = 'none';
+        }
+    });
 }
 
 // Usage runs from tens of percent down to millionths, so show four decimals,
@@ -485,5 +598,15 @@ Promise.all(bucketList.map(async bucket_id => {
     drawChart(seriesList);
     enableDownload(seriesList);
 });
+
+// Fetched separately so the chart does not wait on the (much larger) name list.
+if (!exportMode) {
+    fetch('https://chromestatus.com/data/blink/featureprops')
+        .then(response => response.json())
+        .then(features => enableSearch(features))
+        .catch(() => {
+            searchInput.placeholder = 'Feature name list unavailable';
+        });
+}
     </script>
 </html>
